@@ -23,6 +23,7 @@
 #include "target/target_type.h"
 #include "target/armv7m.h"
 #include "target/arc.h"
+#include "target/armv8.h"
 
 #define UNIMPLEMENTED 0xFFFFFFFFU
 
@@ -105,6 +106,24 @@ static const struct stack_register_offset arc_callee_saved[] = {
 	{ ARC_FP,  56,  32 },
 	{ ARC_R30,  60,  32 }
 };
+
+static const struct stack_register_offset arm64_callee_saved[] = {
+	{ ARMV8_SP,   96,  64 },
+	{ ARMV8_R19,  0,   64 },
+	{ ARMV8_R20,  8,   64 },
+	{ ARMV8_R21,  16,  64 },
+	{ ARMV8_R22,  24,  64 },
+	{ ARMV8_R23,  32,  64 },
+	{ ARMV8_R24,  40,  64 },
+	{ ARMV8_R25,  48,  64 },
+	{ ARMV8_R26,  56,  64 },
+	{ ARMV8_R27,  64,  64 },
+	{ ARMV8_R28,  72,  64 },
+	{ ARMV8_R29,  80,  64 },
+	{ ARMV8_R30,  104, 64 },
+	{ ARMV8_PC,  -1, 64 }
+};
+
 static const struct rtos_register_stacking arm_callee_saved_stacking = {
 	.stack_registers_size = 36,
 	.stack_growth_direction = -1,
@@ -117,6 +136,13 @@ static const struct rtos_register_stacking arc_callee_saved_stacking = {
 	.stack_growth_direction = -1,
 	.num_output_registers = ARRAY_SIZE(arc_callee_saved),
 	.register_offsets = arc_callee_saved,
+};
+
+static const struct rtos_register_stacking arm64_callee_saved_stacking = {
+	.stack_registers_size = 120,
+	.stack_growth_direction = -1,
+	.num_output_registers = ARRAY_SIZE(arm64_callee_saved),
+	.register_offsets = arm64_callee_saved,
 };
 
 static const struct stack_register_offset arm_cpu_saved[] = {
@@ -331,6 +357,41 @@ static int zephyr_get_arm_state(struct rtos *rtos, target_addr_t *addr,
 	return 0;
 }
 
+/* ARM aarch64-specific implementation */
+static int zephyr_get_arm64_state(struct rtos *rtos, target_addr_t *addr,
+			 struct zephyr_params *params,
+			 struct rtos_reg **callee_saved_reg_list,
+			 struct rtos_reg **reg_list, int *num_regs)
+{
+
+	int retval;
+
+	retval = rtos_generic_stack_read(rtos->target,
+			params->callee_saved_stacking,
+			*addr, reg_list, num_regs);
+	if (retval != ERROR_OK)
+		return retval;
+
+	size_t lr_offset = 0, pc_offset = 0;
+	for (size_t i = 0; i < ARRAY_SIZE(arm64_callee_saved); i++) {
+		if (arm64_callee_saved[i].number == ARMV8_R30)
+			lr_offset = i;
+		if (arm64_callee_saved[i].number == ARMV8_PC)
+			pc_offset = i;
+	}
+
+	if (lr_offset == 0 || pc_offset == 0) {
+		LOG_ERROR("Basic registers offsets are missing, check <arm64_callee_saved> struct");
+		return ERROR_FAIL;
+	}
+
+	/* Put LR - 4 value into PC */
+	uint64_t lr = le_to_h_u64((*reg_list)[lr_offset].value);
+	h_u64_to_le((*reg_list)[pc_offset].value, lr - 4);
+
+	return 0;
+}
+
 static struct zephyr_params zephyr_params_list[] = {
 	{
 		.target_name = "cortex_m",
@@ -363,6 +424,12 @@ static struct zephyr_params zephyr_params_list[] = {
 		.callee_saved_stacking = &arc_callee_saved_stacking,
 		.cpu_saved_nofp_stacking = &arc_cpu_saved_stacking,
 		.get_cpu_state = &zephyr_get_arc_state,
+	},
+	{
+		.target_name = "aarch64",
+		.pointer_width = 8,
+		.callee_saved_stacking = &arm64_callee_saved_stacking,
+		.get_cpu_state = &zephyr_get_arm64_state,
 	},
 	{
 		.target_name = NULL
