@@ -71,7 +71,7 @@ struct zephyr_params {
 	const struct rtos_register_stacking *cpu_saved_fp_stacking;
 	int (*get_cpu_state)(struct rtos *rtos, target_addr_t *addr,
 			struct zephyr_params *params,
-			struct rtos_reg *callee_saved_reg_list,
+			struct rtos_reg **callee_saved_reg_list,
 			struct rtos_reg **reg_list, int *num_regs);
 };
 
@@ -225,7 +225,7 @@ static struct rtos_register_stacking arc_cpu_saved_stacking = {
 /* ARCv2 specific implementation */
 static int zephyr_get_arc_state(struct rtos *rtos, target_addr_t *addr,
 			 struct zephyr_params *params,
-			 struct rtos_reg *callee_saved_reg_list,
+			 struct rtos_reg **callee_saved_reg_list,
 			 struct rtos_reg **reg_list, int *num_regs)
 {
 
@@ -242,7 +242,7 @@ static int zephyr_get_arc_state(struct rtos *rtos, target_addr_t *addr,
 	/* Getting callee registers */
 	retval = rtos_generic_stack_read(rtos->target,
 			params->callee_saved_stacking,
-			real_stack_addr, &callee_saved_reg_list,
+			real_stack_addr, callee_saved_reg_list,
 			&num_callee_saved_regs);
 	if (retval != ERROR_OK)
 		return retval;
@@ -257,9 +257,9 @@ static int zephyr_get_arc_state(struct rtos *rtos, target_addr_t *addr,
 		return retval;
 
 	for (int i = 0; i < num_callee_saved_regs; i++)
-		buf_cpy(callee_saved_reg_list[i].value,
-			(*reg_list)[callee_saved_reg_list[i].number].value,
-			callee_saved_reg_list[i].size);
+		buf_cpy((*callee_saved_reg_list)[i].value,
+			(*reg_list)[(*callee_saved_reg_list)[i].number].value,
+		(*callee_saved_reg_list)[i].size);
 
 	/* The blink, sp, pc offsets in arc_cpu_saved structure may be changed,
 	 * but the registers number shall not. So the next code searches the
@@ -296,7 +296,7 @@ static int zephyr_get_arc_state(struct rtos *rtos, target_addr_t *addr,
 /* ARM Cortex-M-specific implementation */
 static int zephyr_get_arm_state(struct rtos *rtos, target_addr_t *addr,
 			 struct zephyr_params *params,
-			 struct rtos_reg *callee_saved_reg_list,
+			 struct rtos_reg **callee_saved_reg_list,
 			 struct rtos_reg **reg_list, int *num_regs)
 {
 
@@ -306,13 +306,13 @@ static int zephyr_get_arm_state(struct rtos *rtos, target_addr_t *addr,
 
 	retval = rtos_generic_stack_read(rtos->target,
 			params->callee_saved_stacking,
-			*addr, &callee_saved_reg_list,
+			*addr, callee_saved_reg_list,
 			&num_callee_saved_regs);
 	if (retval != ERROR_OK)
 		return retval;
 
 	*addr = target_buffer_get_u32(rtos->target,
-			callee_saved_reg_list[0].value);
+			(*callee_saved_reg_list)[0].value);
 
 	if (params->offsets[OFFSET_T_PREEMPT_FLOAT] != UNIMPLEMENTED)
 		stacking = params->cpu_saved_fp_stacking;
@@ -325,9 +325,9 @@ static int zephyr_get_arm_state(struct rtos *rtos, target_addr_t *addr,
 		return retval;
 
 	for (int i = 1; i < num_callee_saved_regs; i++)
-		buf_cpy(callee_saved_reg_list[i].value,
-			(*reg_list)[callee_saved_reg_list[i].number].value,
-			callee_saved_reg_list[i].size);
+		buf_cpy((*callee_saved_reg_list)[i].value,
+			(*reg_list)[(*callee_saved_reg_list)[i].number].value,
+			(*callee_saved_reg_list)[i].size);
 	return 0;
 }
 
@@ -766,7 +766,7 @@ static int zephyr_get_thread_reg_list(struct rtos *rtos, int64_t thread_id,
 	addr = thread_id + params->offsets[OFFSET_T_STACK_POINTER]
 		 - params->callee_saved_stacking->register_offsets[0].offset;
 
-	retval = params->get_cpu_state(rtos, &addr, params, callee_saved_reg_list, reg_list, num_regs);
+	retval = params->get_cpu_state(rtos, &addr, params, &callee_saved_reg_list, reg_list, num_regs);
 
 	free(callee_saved_reg_list);
 
