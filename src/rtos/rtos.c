@@ -628,7 +628,7 @@ int rtos_generic_stack_read(struct target *target,
 	}
 	/* Read the stack */
 	uint8_t *stack_data = malloc(stacking->stack_registers_size);
-	uint32_t address = stack_ptr;
+	target_addr_t address = stack_ptr;
 
 	if (stacking->stack_growth_direction == 1)
 		address -= stacking->stack_registers_size;
@@ -638,7 +638,7 @@ int rtos_generic_stack_read(struct target *target,
 		LOG_ERROR("Error reading stack frame from thread");
 		return retval;
 	}
-	LOG_DEBUG("RTOS: Read stack frame at 0x%" PRIx32, address);
+	LOG_DEBUG("RTOS: Read stack frame at 0x%" PRIx64, address);
 
 #if 0
 		LOG_OUTPUT("Stack Data :");
