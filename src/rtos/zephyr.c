@@ -665,6 +665,8 @@ static int zephyr_fetch_thread_list(struct rtos *rtos, target_addr_t current_thr
 	zephyr_array_init(&thread_array);
 
 	for (; curr; curr = thread.next_ptr) {
+		keep_alive();
+
 		retval = zephyr_fetch_thread(rtos, &thread, curr);
 		if (retval != ERROR_OK)
 			goto error;
