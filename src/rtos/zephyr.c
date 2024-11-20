@@ -652,7 +652,6 @@ static int zephyr_fetch_thread_list(struct rtos *rtos, target_addr_t current_thr
 	struct zephyr_array thread_array;
 	struct zephyr_thread thread;
 	struct thread_detail *td;
-	int64_t curr_id = -1;
 	target_addr_t curr;
 	int retval;
 
@@ -686,9 +685,6 @@ static int zephyr_fetch_thread_list(struct rtos *rtos, target_addr_t current_thr
 						  thread.prio, thread.user_options);
 		if (!td->thread_name_str || !td->extra_info_str)
 			goto error;
-
-		if (td->threadid == current_thread)
-			curr_id = (int64_t)thread_array.elements - 1;
 	}
 
 	LOG_DEBUG("Got information for %zu threads", thread_array.elements);
@@ -698,7 +694,7 @@ static int zephyr_fetch_thread_list(struct rtos *rtos, target_addr_t current_thr
 	rtos->thread_count = (int)thread_array.elements;
 	rtos->thread_details = zephyr_array_detach_ptr(&thread_array);
 
-	rtos->current_threadid = curr_id;
+	rtos->current_threadid = current_thread;
 	rtos->current_thread = current_thread;
 
 	return ERROR_OK;
