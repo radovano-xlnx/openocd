@@ -34,9 +34,9 @@
 #define ARM_XPSR_OFFSET 28
 
 struct zephyr_thread {
-	uint32_t ptr, next_ptr;
-	uint32_t entry;
-	uint32_t stack_pointer;
+	target_addr_t ptr, next_ptr;
+	target_addr_t entry;
+	target_addr_t stack_pointer;
 	uint8_t state;
 	uint8_t user_options;
 	int8_t prio;
@@ -64,8 +64,8 @@ struct zephyr_params {
 	const char *target_name;
 	uint8_t size_width;
 	uint8_t pointer_width;
-	uint32_t num_offsets;
-	uint32_t offsets[OFFSET_MAX];
+	uint64_t num_offsets;
+	uint64_t offsets[OFFSET_MAX];
 	const struct rtos_register_stacking *callee_saved_stacking;
 	const struct rtos_register_stacking *cpu_saved_nofp_stacking;
 	const struct rtos_register_stacking *cpu_saved_fp_stacking;
@@ -496,35 +496,50 @@ static void *zephyr_array_detach_ptr(struct zephyr_array *array)
 	return ptr;
 }
 
-static uint32_t zephyr_kptr(const struct rtos *rtos, enum zephyr_offsets off)
+static target_addr_t zephyr_kptr(const struct rtos *rtos, enum zephyr_offsets off)
 {
 	const struct zephyr_params *params = rtos->rtos_specific_params;
 
 	return rtos->symbols[ZEPHYR_VAL__KERNEL].address + params->offsets[off];
 }
 
+static int zephyr_read(struct target *target, target_addr_t addr, uint64_t *dest, size_t size)
+{
+	int retval = ERROR_FAIL;
+
+	if (size == 4) {
+		uint32_t tmp;
+		retval = target_read_u32(target, addr, &tmp);
+		*dest = tmp;
+	} else if (size == 8) {
+		retval = target_read_u64(target, addr, dest);
+	}
+
+	return retval;
+}
+
 static int zephyr_fetch_thread(const struct rtos *rtos,
-				struct zephyr_thread *thread, uint32_t ptr)
+				struct zephyr_thread *thread, target_addr_t ptr)
 {
 	const struct zephyr_params *param = rtos->rtos_specific_params;
 	int retval;
 
 	thread->ptr = ptr;
 
-	retval = target_read_u32(rtos->target, ptr + param->offsets[OFFSET_T_ENTRY],
-				 &thread->entry);
+	retval = zephyr_read(rtos->target, ptr + param->offsets[OFFSET_T_ENTRY],
+				 &thread->entry, param->pointer_width);
 	if (retval != ERROR_OK)
 		return retval;
 
-	retval = target_read_u32(rtos->target,
+	retval = zephyr_read(rtos->target,
 				 ptr + param->offsets[OFFSET_T_NEXT_THREAD],
-				 &thread->next_ptr);
+				 &thread->next_ptr, param->pointer_width);
 	if (retval != ERROR_OK)
 		return retval;
 
-	retval = target_read_u32(rtos->target,
+	retval = zephyr_read(rtos->target,
 				 ptr + param->offsets[OFFSET_T_STACK_POINTER],
-				 &thread->stack_pointer);
+				 &thread->stack_pointer, param->pointer_width);
 	if (retval != ERROR_OK)
 		return retval;
 
@@ -557,24 +572,25 @@ static int zephyr_fetch_thread(const struct rtos *rtos,
 		thread->name[sizeof(thread->name) - 1] = '\0';
 	}
 
-	LOG_DEBUG("Fetched thread%" PRIx32 ": {entry@0x%" PRIx32
+	LOG_DEBUG("Fetched thread%" PRIx64 ": {entry@0x%" PRIx64
 		", state=%" PRIu8 ", useropts=%" PRIu8 ", prio=%" PRId8 "}",
 		ptr, thread->entry, thread->state, thread->user_options, thread->prio);
 
 	return ERROR_OK;
 }
 
-static int zephyr_fetch_thread_list(struct rtos *rtos, uint32_t current_thread)
+static int zephyr_fetch_thread_list(struct rtos *rtos, target_addr_t current_thread)
 {
+	const struct zephyr_params *param = rtos->rtos_specific_params;
 	struct zephyr_array thread_array;
 	struct zephyr_thread thread;
 	struct thread_detail *td;
 	int64_t curr_id = -1;
-	uint32_t curr;
+	target_addr_t curr;
 	int retval;
 
-	retval = target_read_u32(rtos->target, zephyr_kptr(rtos, OFFSET_K_THREADS),
-		&curr);
+	retval = zephyr_read(rtos->target, zephyr_kptr(rtos, OFFSET_K_THREADS),
+		&curr, param->pointer_width);
 	if (retval != ERROR_OK) {
 		LOG_ERROR("Could not fetch current thread pointer");
 		return retval;
@@ -597,7 +613,7 @@ static int zephyr_fetch_thread_list(struct rtos *rtos, uint32_t current_thread)
 		if (thread.name[0])
 			td->thread_name_str = strdup(thread.name);
 		else
-			td->thread_name_str = alloc_printf("thr_%" PRIx32 "_%" PRIx32,
+			td->thread_name_str = alloc_printf("thr_%" PRIx64 "_%" PRIx64,
 							   thread.entry, thread.ptr);
 		td->extra_info_str = alloc_printf("prio:%" PRId8 ",useropts:%" PRIu8,
 						  thread.prio, thread.user_options);
@@ -665,15 +681,16 @@ static int zephyr_update_threads(struct rtos *rtos)
 		return retval;
 	}
 
-	if (param->size_width != 4) {
-		LOG_ERROR("Only size_t of 4 bytes are supported");
+	if (param->size_width != 4 && param->size_width != 8) {
+		LOG_ERROR("Only size_t of 4 or 8 bytes are supported");
 		return ERROR_FAIL;
 	}
 
 	if (rtos->symbols[ZEPHYR_VAL__KERNEL_OPENOCD_NUM_OFFSETS].address) {
-		retval = target_read_u32(rtos->target,
+		retval = zephyr_read(rtos->target,
 				rtos->symbols[ZEPHYR_VAL__KERNEL_OPENOCD_NUM_OFFSETS].address,
-				&param->num_offsets);
+				&param->num_offsets,
+				param->size_width);
 		if (retval != ERROR_OK) {
 			LOG_ERROR("Couldn't not fetch number of offsets from Zephyr");
 			return retval;
@@ -684,16 +701,17 @@ static int zephyr_update_threads(struct rtos *rtos)
 			return ERROR_FAIL;
 		}
 	} else {
-		retval = target_read_u32(rtos->target,
+		retval = zephyr_read(rtos->target,
 				rtos->symbols[ZEPHYR_VAL__KERNEL_OPENOCD_OFFSETS].address,
-				&param->offsets[OFFSET_VERSION]);
+				&param->offsets[OFFSET_VERSION],
+			  param->size_width);
 		if (retval != ERROR_OK) {
 			LOG_ERROR("Couldn't not fetch offsets from Zephyr");
 			return retval;
 		}
 
 		if (param->offsets[OFFSET_VERSION] > 1) {
-			LOG_ERROR("Unexpected OpenOCD support version %" PRIu32,
+			LOG_ERROR("Unexpected OpenOCD support version %" PRIu64,
 					param->offsets[OFFSET_VERSION]);
 			return ERROR_FAIL;
 		}
@@ -708,7 +726,7 @@ static int zephyr_update_threads(struct rtos *rtos)
 	}
 	/* We can fetch the whole array for version 0, as they're supposed
 	 * to grow only */
-	uint32_t address;
+	target_addr_t address;
 	address  = rtos->symbols[ZEPHYR_VAL__KERNEL_OPENOCD_OFFSETS].address;
 	for (size_t i = 0; i < OFFSET_MAX; i++, address += param->size_width) {
 		if (i >= param->num_offsets) {
@@ -716,19 +734,21 @@ static int zephyr_update_threads(struct rtos *rtos)
 			continue;
 		}
 
-		retval = target_read_u32(rtos->target, address, &param->offsets[i]);
+		retval = zephyr_read(rtos->target, address, &param->offsets[i],
+				param->size_width);
 		if (retval != ERROR_OK) {
 			LOG_ERROR("Could not fetch offsets from Zephyr");
 			return ERROR_FAIL;
 		}
 	}
 
-	LOG_DEBUG("Zephyr OpenOCD support version %" PRId32,
+	LOG_DEBUG("Zephyr OpenOCD support version %" PRId64,
 			  param->offsets[OFFSET_VERSION]);
 
-	uint32_t current_thread;
-	retval = target_read_u32(rtos->target,
-		zephyr_kptr(rtos, OFFSET_K_CURR_THREAD), &current_thread);
+	target_addr_t current_thread;
+	retval = zephyr_read(rtos->target,
+		zephyr_kptr(rtos, OFFSET_K_CURR_THREAD), &current_thread,
+		param->pointer_width);
 	if (retval != ERROR_OK) {
 		LOG_ERROR("Could not obtain current thread ID");
 		return retval;
@@ -743,7 +763,7 @@ static int zephyr_update_threads(struct rtos *rtos)
 	return ERROR_OK;
 }
 
-static int zephyr_get_thread_reg_list(struct rtos *rtos, int64_t thread_id,
+static int zephyr_get_thread_reg_list(struct rtos *rtos, threadid_t thread_id,
 		struct rtos_reg **reg_list, int *num_regs)
 {
 	struct zephyr_params *params;
